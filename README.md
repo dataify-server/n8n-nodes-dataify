@@ -1,46 +1,48 @@
 # n8n-nodes-dataify
 
-This is an n8n community node. It lets you use _app/service name_ in your n8n workflows.
-
-_App/service name_ is _one or two sentences describing the service this node integrates with_.
-
-[n8n](https://n8n.io/) is a [fair-code licensed](https://docs.n8n.io/sustainable-use-license/) workflow automation platform.
-
-[Installation](#installation)
-[Operations](#operations)
-[Credentials](#credentials)
-[Compatibility](#compatibility)
-[Usage](#usage)
-[Resources](#resources)
-[Version history](#version-history)
+This n8n community node connects workflows to the Dataify MCP API. It discovers the tools available to the configured token at runtime, so newly added Dataify tools can be used without updating the node package.
 
 ## Installation
 
-Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes/installation/) in the n8n community nodes documentation.
+Install `n8n-nodes-dataify` from the Community Nodes settings in a self-hosted n8n instance, or follow the [n8n community node installation guide](https://docs.n8n.io/integrations/community-nodes/installation/).
+
+For local development:
+
+```bash
+npm install
+npm run dev
+```
 
 ## Operations
 
-_List the operations supported by your node._
+- **Tool: Call** - Select or enter an MCP tool name and call it with a JSON arguments object.
+- **Server: List Tools** - Return all tools visible to the configured API token, optionally including their JSON schemas.
 
 ## Credentials
 
-_If users need to authenticate with the app/service, provide details here. You should include prerequisites (such as signing up with the service), available authentication methods, and how to set them up._
+Create a **Dataify MCP API** credential with:
 
-## Compatibility
+- **Server URL** - The Dataify MCP server base URL. The node adds `/mcp` automatically.
+- **API Token** - Sent as the required `token` query parameter and stored encrypted by n8n.
+- **Allowed Tools** - Optional comma-separated tool or category codes sent as the `tools` query parameter.
 
-_State the minimum n8n version, as well as which versions you test against. You can also include any known version incompatibility issues._
+The default local server URL is `http://localhost:7780`.
 
 ## Usage
 
-_This is an optional section. Use it to help users with any difficult or confusing aspects of the node._
+Choose a tool from the dynamic list or enter its exact MCP name. The **Arguments** field must be a JSON object matching that tool's input schema. Keep **Simplify Output** enabled to return `structuredContent` when the tool provides it, or disable it to receive the full MCP tool result.
 
-_By the time users are looking for community nodes, they probably already know n8n basics. But if you expect new users, you can link to the [Try it out](https://docs.n8n.io/try-it-out/) documentation to help them get started._
+The node supports the Streamable HTTP MCP transport and accepts both JSON and Server-Sent Events responses. Each input item is executed independently and supports n8n's **Continue On Fail** setting.
+
+## Compatibility
+
+Built with the official `@n8n/node-cli` toolchain and Node.js 22. The package uses the MCP protocol version supported by `dataify_mcp_api` (`2025-11-25`).
 
 ## Resources
 
-* [n8n community nodes documentation](https://docs.n8n.io/integrations/#community-nodes)
-* _Link to app/service documentation._
+- [Dataify](https://dataify.com)
+- [n8n community nodes documentation](https://docs.n8n.io/integrations/#community-nodes)
 
 ## Version history
 
-_This is another optional section. If your node has multiple versions, include a short description of available versions and what changed, as well as any compatibility impact._
+- **0.1.0** - Initial release with dynamic tool discovery and tool calls.
