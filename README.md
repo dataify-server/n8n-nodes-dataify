@@ -23,16 +23,18 @@ npm run dev
 Create a **Dataify MCP API** credential with:
 
 - **Server URL** - The Dataify MCP server base URL. The node adds `/mcp` automatically.
-- **API Token** - Sent as the required `token` query parameter and stored encrypted by n8n.
+- **API Token** - Obtain one from the [Dataify dashboard](https://dashboard.dataify.com). It is sent as the required `token` query parameter and stored encrypted by n8n.
+- **Allow Insecure HTTP** - Disabled by default for non-local servers. Enable only for a trusted private deployment that cannot use HTTPS.
 - **Allowed Tools** - Optional comma-separated tool or category codes sent as the `tools` query parameter.
 
 The default local server URL is `http://localhost:7780`.
+Remote servers must use HTTPS by default. Because the Dataify API contract places the token in the query string, configure reverse proxies and access logs to redact query parameters.
 
 ## Usage
 
-Choose a tool from the dynamic list or enter its exact MCP name. The **Arguments** field must be a JSON object matching that tool's input schema. Keep **Simplify Output** enabled to return `structuredContent` when the tool provides it, or disable it to receive the full MCP tool result.
+Choose a tool from the dynamic list or enter its exact MCP name. The list identifies required input fields when the server schema provides them. The **Arguments** field must be a JSON object matching that tool's input schema. Keep **Simplify Output** enabled to return `structuredContent` when the tool provides it, or disable it to receive the full MCP tool result.
 
-The node supports the Streamable HTTP MCP transport and accepts both JSON and Server-Sent Events responses. Each input item is executed independently and supports n8n's **Continue On Fail** setting.
+The node supports the Dataify server's Streamable HTTP transport and accepts its buffered JSON and Server-Sent Events responses. Each input item is executed independently and supports n8n's **Continue On Fail** setting.
 
 ## Compatibility
 

@@ -1,6 +1,5 @@
 import type {
 	IAuthenticate,
-	ICredentialTestRequest,
 	ICredentialType,
 	INodeProperties,
 } from 'n8n-workflow';
@@ -8,7 +7,11 @@ import type {
 export class DataifyMcpApi implements ICredentialType {
 	name = 'dataifyMcpApi';
 	displayName = 'Dataify MCP API';
-	documentationUrl = 'https://dataify.com';
+	icon = {
+		light: 'file:../nodes/DataifyMcp/dataify.svg',
+		dark: 'file:../nodes/DataifyMcp/dataify.dark.svg',
+	} as const;
+	documentationUrl = 'https://dashboard.dataify.com';
 	supportedNodes = ['dataifyMcp'];
 	restrictToSupportedNodes = true as const;
 
@@ -28,6 +31,14 @@ export class DataifyMcpApi implements ICredentialType {
 			typeOptions: { password: true },
 			default: '',
 			required: true,
+		},
+		{
+			displayName: 'Allow Insecure HTTP',
+			name: 'allowInsecureHttp',
+			type: 'boolean',
+			default: false,
+			description:
+				'Whether to allow unencrypted HTTP for a trusted non-local server. HTTPS is strongly recommended.',
 		},
 		{
 			displayName: 'Allowed Tools',
@@ -50,28 +61,5 @@ export class DataifyMcpApi implements ICredentialType {
 				...(allowedTools ? { tools: allowedTools } : {}),
 			},
 		};
-	};
-
-	test: ICredentialTestRequest = {
-		request: {
-			baseURL: '={{$credentials.serverUrl.replace(/\\\/$/, "")}}',
-			url: '/mcp',
-			method: 'POST',
-			headers: {
-				Accept: 'application/json, text/event-stream',
-				'Content-Type': 'application/json',
-			},
-			body: {
-				jsonrpc: '2.0',
-				id: 1,
-				method: 'initialize',
-				params: {
-					protocolVersion: '2025-11-25',
-					capabilities: {},
-					clientInfo: { name: 'n8n-nodes-dataify', version: '0.1.0' },
-				},
-			},
-			json: true,
-		},
 	};
 }

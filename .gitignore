@@ -1,3 +1,6 @@
 dist
 node_modules
 .npm-cache/
+.n8n-dev/
+n8n-dev.stdout.log
+n8n-dev.stderr.log

@@ -1,9 +1,13 @@
 import type {
 	ICredentialDataDecryptedObject,
+	ICredentialTestFunctions,
+	ICredentialsDecrypted,
 	IDataObject,
 	IExecuteFunctions,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
+	IN8nHttpFullResponse,
+	INodeCredentialTestResult,
 	INodeExecutionData,
 	INodeListSearchResult,
 	INodeType,
@@ -20,9 +24,11 @@ import {
 	McpProtocolError,
 	type McpTool,
 	parseToolArguments,
-} from './mcpClient';
+	toSafeErrorMessage,
+} from '../../shared/mcpClient';
 
 const CREDENTIAL_TYPE = 'dataifyMcpApi';
+const REQUEST_TIMEOUT_MS = 180_000;
 
 type DataifyFunctions = IExecuteFunctions | ILoadOptionsFunctions;
 
@@ -30,7 +36,7 @@ export class DataifyMcp implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Dataify MCP',
 		name: 'dataifyMcp',
-		icon: 'file:dataify.svg',
+		icon: { light: 'file:dataify.svg', dark: 'file:dataify.dark.svg' },
 		group: ['output'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -39,7 +45,7 @@ export class DataifyMcp implements INodeType {
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
 		usableAsTool: true,
-		credentials: [{ name: CREDENTIAL_TYPE, required: true }],
+		credentials: [{ name: 'dataifyMcpApi', required: true, testedBy: 'testDataifyMcp' }],
 		properties: [
 			{
 				displayName: 'Resource',
@@ -136,28 +142,100 @@ export class DataifyMcp implements INodeType {
 	};
 
 	methods = {
+		credentialTest: {
+			async testDataifyMcp(
+				this: ICredentialTestFunctions,
+				credential: ICredentialsDecrypted<ICredentialDataDecryptedObject>,
+			): Promise<INodeCredentialTestResult> {
+				const credentialData = credential.data ?? {};
+				const token = String(credentialData.apiToken ?? '');
+				let client: DataifyMcpClient | undefined;
+				try {
+					const url = new URL(
+						buildMcpUrl(
+							String(credentialData.serverUrl ?? ''),
+							credentialData.allowInsecureHttp === true,
+						),
+					);
+					url.searchParams.set('token', token);
+					const allowedTools = String(credentialData.allowedTools ?? '').trim();
+					const credentialTestTools = new Set(
+						allowedTools
+							.split(',')
+							.map((tool) => tool.trim())
+							.filter(Boolean),
+					);
+					credentialTestTools.add('query_user_info');
+					url.searchParams.set('tools', [...credentialTestTools].join(','));
+
+					client = new DataifyMcpClient(async (request) => {
+						// Credential test contexts currently expose only the legacy request helper.
+						// eslint-disable-next-line @n8n/community-nodes/no-deprecated-workflow-functions
+						const response = (await this.helpers.request({
+							uri: url.toString(),
+							method: request.method,
+							headers: request.headers,
+							...(request.body !== undefined ? { body: request.body } : {}),
+							encoding: 'utf8',
+							followAllRedirects: false,
+							followRedirect: false,
+							maxRedirects: 0,
+							resolveWithFullResponse: true,
+							sendCredentialsOnCrossOriginRedirect: false,
+							simple: false,
+							timeout: REQUEST_TIMEOUT_MS,
+						})) as IN8nHttpFullResponse;
+						return {
+							body: response.body,
+							headers: response.headers,
+							statusCode: response.statusCode,
+						};
+					});
+
+					const tools = await client.listTools();
+					if (tools.length === 0) {
+						return {
+							status: 'Error',
+							message: 'Connected, but no tools are visible. Check the API token and allowed tools.',
+						};
+					}
+					await client.callTool('query_user_info', {});
+					return { status: 'OK', message: `Connected successfully (${tools.length} tools)` };
+				} catch (error) {
+					const rawMessage = error instanceof Error ? error.message : String(error);
+					const redactedMessage = toSafeErrorMessage(rawMessage, [token]);
+					return { status: 'Error', message: `Connection failed: ${redactedMessage}` };
+				} finally {
+					await client?.close();
+				}
+			},
+		},
 		listSearch: {
 			async searchTools(
 				this: ILoadOptionsFunctions,
 				filter?: string,
 			): Promise<INodeListSearchResult> {
 				const client = await createClient(this);
-				const normalizedFilter = filter?.trim().toLowerCase() ?? '';
-				const tools = await client.listTools();
-				return {
-					results: tools
-						.filter((tool) => {
-							if (!normalizedFilter) return true;
-							return `${tool.name} ${tool.description ?? ''}`
-								.toLowerCase()
-								.includes(normalizedFilter);
-						})
-						.map((tool) => ({
-							name: tool.name,
-							value: tool.name,
-							description: tool.description,
-						})),
-				};
+				try {
+					const normalizedFilter = filter?.trim().toLowerCase() ?? '';
+					const tools = await client.listTools();
+					return {
+						results: tools
+							.filter((tool) => {
+								if (!normalizedFilter) return true;
+								return `${tool.name} ${tool.description ?? ''}`
+									.toLowerCase()
+									.includes(normalizedFilter);
+							})
+							.map((tool) => ({
+								name: tool.name,
+								value: tool.name,
+								description: formatToolSearchDescription(tool),
+							})),
+					};
+				} finally {
+					await client.close();
+				}
 			},
 		},
 	};
@@ -167,10 +245,11 @@ export class DataifyMcp implements INodeType {
 		const returnData: INodeExecutionData[] = [];
 
 		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+			let client: DataifyMcpClient | undefined;
 			try {
 				const resource = this.getNodeParameter('resource', itemIndex) as string;
 				const operation = this.getNodeParameter('operation', itemIndex) as string;
-				const client = await createClient(this);
+				client = await createClient(this);
 
 				if (resource === 'tool' && operation === 'call') {
 					const toolName = this.getNodeParameter('toolName', itemIndex, '', {
@@ -207,19 +286,20 @@ export class DataifyMcp implements INodeType {
 					{ itemIndex },
 				);
 			} catch (error) {
+				const safeMessage = toSafeErrorMessage(
+					error instanceof Error ? error.message : String(error),
+					[await readApiTokenForRedaction(this)],
+				);
 				if (this.continueOnFail()) {
 					returnData.push({
-						json: { error: error instanceof Error ? error.message : String(error) },
+						json: { error: safeMessage },
 						pairedItem: { item: itemIndex },
 					});
 					continue;
 				}
-				if (error instanceof NodeOperationError || error instanceof NodeApiError) {
-					throw error;
-				}
 				if (error instanceof McpProtocolError) {
 					const apiError: JsonObject = {
-						message: error.message,
+						message: safeMessage,
 						...(error.code !== undefined ? { code: error.code } : {}),
 						...(error.statusCode !== undefined
 							? { httpCode: String(error.statusCode) }
@@ -228,6 +308,8 @@ export class DataifyMcp implements INodeType {
 					throw new NodeApiError(this.getNode(), apiError, { itemIndex });
 				}
 				throw new NodeOperationError(this.getNode(), error as Error, { itemIndex });
+			} finally {
+				await client?.close();
 			}
 		}
 
@@ -235,11 +317,26 @@ export class DataifyMcp implements INodeType {
 	}
 }
 
+async function readApiTokenForRedaction(context: IExecuteFunctions): Promise<string> {
+	try {
+		const credentials = (await context.getCredentials(
+			CREDENTIAL_TYPE,
+		)) as ICredentialDataDecryptedObject;
+		return String(credentials.apiToken ?? '');
+	} catch {
+		return '';
+	}
+}
+
 async function createClient(context: DataifyFunctions): Promise<DataifyMcpClient> {
 	const credentials = (await context.getCredentials(
 		CREDENTIAL_TYPE,
 	)) as ICredentialDataDecryptedObject;
-	const url = buildMcpUrl(String(credentials.serverUrl));
+	const url = buildMcpUrl(
+		String(credentials.serverUrl),
+		credentials.allowInsecureHttp === true,
+	);
+	const allowedDomain = new URL(url).hostname;
 
 	return new DataifyMcpClient(async (request) => {
 		const requestOptions: IHttpRequestOptions = {
@@ -250,6 +347,10 @@ async function createClient(context: DataifyFunctions): Promise<DataifyMcpClient
 			encoding: 'text',
 			returnFullResponse: true,
 			ignoreHttpStatusErrors: true,
+			allowedDomains: allowedDomain,
+			maxRedirects: 0,
+			sendCredentialsOnCrossOriginRedirect: false,
+			timeout: REQUEST_TIMEOUT_MS,
 		};
 		const response = await context.helpers.httpRequestWithAuthentication.call(
 			context,
@@ -291,8 +392,19 @@ function formatTool(tool: McpTool, includeSchemas: boolean): IDataObject {
 	if (includeSchemas) {
 		return tool as IDataObject;
 	}
-	const { inputSchema: _inputSchema, outputSchema: _outputSchema, ...summary } = tool;
-	return summary as IDataObject;
+	return Object.fromEntries(
+		Object.entries(tool).filter(([key]) => key !== 'inputSchema' && key !== 'outputSchema'),
+	) as IDataObject;
+}
+
+function formatToolSearchDescription(tool: McpTool): string | undefined {
+	const required = tool.inputSchema?.required;
+	const requiredNames = Array.isArray(required)
+		? required.filter((name): name is string => typeof name === 'string')
+		: [];
+	const requiredText = requiredNames.length > 0 ? `Required: ${requiredNames.join(', ')}` : '';
+	const description = [tool.description, requiredText].filter(Boolean).join(' | ');
+	return description ? description.slice(0, 500) : undefined;
 }
 
 function isDataObject(value: unknown): value is Record<string, unknown> {
