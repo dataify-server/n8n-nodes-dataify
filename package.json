@@ -55,5 +55,8 @@
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/dataify-server/dataify-n8n.git"
+	},
+	"publishConfig": {
+		"access": "public"
 	}
 }
