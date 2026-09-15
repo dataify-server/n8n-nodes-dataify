@@ -1,13 +1,18 @@
 /* eslint-disable @n8n/community-nodes/require-node-api-error -- This transport-agnostic client has no n8n node context; the node boundary converts its typed errors. */
 
+import packageMetadata from '../package.json';
+
 const MCP_PROTOCOL_VERSION = '2025-11-25';
-const CLIENT_INFO = { name: 'n8n-nodes-dataify', version: '0.1.0' } as const;
+const CLIENT_INFO = { name: packageMetadata.name, version: packageMetadata.version } as const;
 const MAX_ARGUMENT_JSON_CHARACTERS = 1_000_000;
 const MAX_ARGUMENT_DEPTH = 50;
 const MAX_ARGUMENT_VALUES = 10_000;
 const MAX_TOOL_PAGES = 100;
 const MAX_TOOLS = 5_000;
+const MAX_TOOL_LIST_CHARACTERS = 20_000_000;
+const MAX_TOOL_LIST_DURATION_MS = 300_000;
 const MAX_SAFE_ERROR_CHARACTERS = 2_000;
+const MAX_RESPONSE_BODY_CHARACTERS = 10_000_000;
 
 type JsonRpcId = number | string;
 
@@ -52,7 +57,7 @@ export interface McpInitializeResult {
 export interface McpTool {
 	name: string;
 	description?: string;
-	inputSchema?: Record<string, unknown>;
+	inputSchema: Record<string, unknown>;
 	outputSchema?: Record<string, unknown>;
 	[key: string]: unknown;
 }
@@ -64,9 +69,9 @@ export interface McpContent {
 }
 
 export interface McpCallToolResult {
-	content?: McpContent[];
+	content: McpContent[];
 	isError?: boolean;
-	structuredContent?: unknown;
+	structuredContent?: Record<string, unknown>;
 	[key: string]: unknown;
 }
 
@@ -82,7 +87,11 @@ export class McpProtocolError extends Error {
 	}
 }
 
-export function buildMcpUrl(serverUrl: string, allowInsecureHttp = false): string {
+export function buildMcpUrl(
+	serverUrl: string,
+	allowInsecureHttp = false,
+	allowPrivateNetwork = false,
+): string {
 	let url: URL;
 	try {
 		url = new URL(serverUrl.trim());
@@ -96,12 +105,25 @@ export function buildMcpUrl(serverUrl: string, allowInsecureHttp = false): strin
 	if (url.username || url.password) {
 		throw new Error('Server URL must not contain embedded credentials');
 	}
-	if ([...url.searchParams.keys()].some((key) => /^(?:token|api[_-]?key)$/i.test(key))) {
+	if (
+		[...url.searchParams.keys()].some((key) =>
+			/^(?:token|api[_-]?key|access_token|id_token|refresh_token)$/i.test(key),
+		)
+	) {
 		throw new Error('Server URL must not contain token or API key query parameters');
 	}
 	if (url.protocol === 'http:' && !allowInsecureHttp && !isLoopbackHostname(url.hostname)) {
 		throw new Error(
 			'Server URL must use HTTPS unless insecure HTTP is explicitly enabled for a trusted server',
+		);
+	}
+	if (
+		!allowPrivateNetwork &&
+		!isLoopbackHostname(url.hostname) &&
+		isPrivateNetworkAddress(url.hostname)
+	) {
+		throw new Error(
+			'Server URL must not target a private network unless private network access is explicitly enabled',
 		);
 	}
 
@@ -133,7 +155,10 @@ export function parseToolArguments(value: unknown): Record<string, unknown> {
 }
 
 export function redactSensitiveQueryValues(message: string): string {
-	return message.replace(/([?&](?:token|api[_-]?key)=)[^&\s]+/gi, '$1***');
+	return message.replace(
+		/([?&](?:token|api[_-]?key|access_token|id_token|refresh_token)=)[^&\s]+/gi,
+		'$1***',
+	);
 }
 
 export function toSafeErrorMessage(message: string, secrets: string[] = []): string {
@@ -162,38 +187,43 @@ export class DataifyMcpClient {
 			return this.initializationResult;
 		}
 
-		const { response, result } = await this.sendRequest<McpInitializeResult>('initialize', {
-			protocolVersion: MCP_PROTOCOL_VERSION,
-			capabilities: {},
-			clientInfo: CLIENT_INFO,
-		});
-
-		const validatedResult = validateInitializeResult(result);
-		this.protocolVersion = validatedResult.protocolVersion;
-		this.sessionId = readHeader(response.headers, 'mcp-session-id');
 		try {
+			const { result } = await this.sendRequest<McpInitializeResult>('initialize', {
+				protocolVersion: MCP_PROTOCOL_VERSION,
+				capabilities: {},
+				clientInfo: CLIENT_INFO,
+			});
+			const validatedResult = validateInitializeResult(result);
+			this.protocolVersion = validatedResult.protocolVersion;
 			await this.sendNotification('notifications/initialized');
+			this.initializationResult = validatedResult;
+			return validatedResult;
 		} catch (error) {
-			this.resetSession();
+			await this.close();
 			throw error;
 		}
-		this.initializationResult = validatedResult;
-		return validatedResult;
 	}
 
 	async listTools(): Promise<McpTool[]> {
 		await this.initialize();
 		const tools: McpTool[] = [];
+		const startedAt = Date.now();
+		let toolCharacters = 0;
 		let cursor: string | undefined;
 		let pageCount = 0;
 		const seenCursors = new Set<string>();
 
 		do {
+			if (Date.now() - startedAt > MAX_TOOL_LIST_DURATION_MS) {
+				throw new McpProtocolError(
+					`MCP tools/list exceeded ${MAX_TOOL_LIST_DURATION_MS} milliseconds`,
+				);
+			}
 			pageCount += 1;
 			if (pageCount > MAX_TOOL_PAGES) {
 				throw new McpProtocolError(`MCP tools/list exceeded ${MAX_TOOL_PAGES} pages`);
 			}
-			const params = cursor ? { cursor } : {};
+			const params = cursor !== undefined ? { cursor } : {};
 			const { result } = await this.sendRequest<unknown>(
 				'tools/list',
 				params,
@@ -202,6 +232,12 @@ export class DataifyMcpClient {
 				throw new McpProtocolError('MCP tools/list response does not contain a tools array');
 			}
 			const pageTools = result.tools.map(validateTool);
+			toolCharacters += JSON.stringify(pageTools).length;
+			if (toolCharacters > MAX_TOOL_LIST_CHARACTERS) {
+				throw new McpProtocolError(
+					`MCP tools/list exceeded ${MAX_TOOL_LIST_CHARACTERS} schema characters`,
+				);
+			}
 			if (tools.length + pageTools.length > MAX_TOOLS) {
 				throw new McpProtocolError(`MCP tools/list exceeded ${MAX_TOOLS} tools`);
 			}
@@ -211,13 +247,13 @@ export class DataifyMcpClient {
 				throw new McpProtocolError('MCP tools/list nextCursor must be a string');
 			}
 			cursor = result.nextCursor;
-			if (cursor && seenCursors.has(cursor)) {
+			if (cursor !== undefined && seenCursors.has(cursor)) {
 				throw new McpProtocolError('MCP tools/list returned a repeated pagination cursor');
 			}
-			if (cursor) {
+			if (cursor !== undefined) {
 				seenCursors.add(cursor);
 			}
-		} while (cursor);
+		} while (cursor !== undefined);
 
 		return tools;
 	}
@@ -233,7 +269,7 @@ export class DataifyMcpClient {
 		if (validatedResult.isError) {
 			const message =
 				validatedResult.content
-					?.filter((content) => content.type === 'text' && typeof content.text === 'string')
+					.filter((content) => content.type === 'text' && typeof content.text === 'string')
 					.map((content) => content.text)
 					.join('\n') || `MCP tool ${name} returned an error`;
 			throw new McpProtocolError(message, -32000, validatedResult);
@@ -264,6 +300,9 @@ export class DataifyMcpClient {
 	): Promise<{ response: McpHttpResponse; result: T }> {
 		const id = this.nextRequestId++;
 		const response = await this.performRequest({ jsonrpc: '2.0', id, method, params });
+		if (method === 'initialize') {
+			this.sessionId = readHeader(response.headers, 'mcp-session-id');
+		}
 
 		if (
 			response.statusCode === 404 &&
@@ -386,7 +425,7 @@ function validateTool(value: unknown): McpTool {
 	if (value.description !== undefined && typeof value.description !== 'string') {
 		throw new McpProtocolError(`MCP tool ${value.name} has an invalid description`);
 	}
-	if (value.inputSchema !== undefined && !isRecord(value.inputSchema)) {
+	if (!isRecord(value.inputSchema)) {
 		throw new McpProtocolError(`MCP tool ${value.name} has an invalid inputSchema`);
 	}
 	if (value.outputSchema !== undefined && !isRecord(value.outputSchema)) {
@@ -402,16 +441,17 @@ function validateCallToolResult(value: unknown): McpCallToolResult {
 	if (value.isError !== undefined && typeof value.isError !== 'boolean') {
 		throw new McpProtocolError('MCP tools/call isError must be a boolean');
 	}
-	if (value.content !== undefined) {
-		if (
-			!Array.isArray(value.content) ||
-			value.content.some(
-				(content) =>
-					!isRecord(content) || typeof content.type !== 'string' || content.type.trim() === '',
-			)
-		) {
-			throw new McpProtocolError('MCP tools/call content must be an array of content objects');
-		}
+	if (
+		!Array.isArray(value.content) ||
+		value.content.some(
+			(content) =>
+				!isRecord(content) || typeof content.type !== 'string' || content.type.trim() === '',
+		)
+	) {
+		throw new McpProtocolError('MCP tools/call content must be an array of content objects');
+	}
+	if (value.structuredContent !== undefined && !isRecord(value.structuredContent)) {
+		throw new McpProtocolError('MCP tools/call structuredContent must be an object');
 	}
 	return value as McpCallToolResult;
 }
@@ -462,8 +502,14 @@ function parseMessages(body: unknown): JsonRpcResponse[] {
 	if (isJsonRpcResponse(body)) {
 		return [body];
 	}
+	assertNoInvalidJsonRpcError(body);
 	if (typeof body !== 'string' || body.trim() === '') {
 		throw new McpProtocolError('MCP server returned an empty response');
+	}
+	if (body.length > MAX_RESPONSE_BODY_CHARACTERS) {
+		throw new McpProtocolError(
+			`MCP server response exceeds ${MAX_RESPONSE_BODY_CHARACTERS} characters`,
+		);
 	}
 
 	const trimmedBody = body.trim();
@@ -473,7 +519,11 @@ function parseMessages(body: unknown): JsonRpcResponse[] {
 			if (isJsonRpcResponse(parsed)) {
 				return [parsed];
 			}
+			assertNoInvalidJsonRpcError(parsed);
 		} catch (error) {
+			if (error instanceof McpProtocolError) {
+				throw error;
+			}
 			throw new McpProtocolError(
 				`MCP server returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
 			);
@@ -496,7 +546,10 @@ function parseMessages(body: unknown): JsonRpcResponse[] {
 			if (isJsonRpcResponse(parsed)) {
 				messages.push(parsed);
 			}
-		} catch {
+		} catch (error) {
+			if (error instanceof McpProtocolError) {
+				throw error;
+			}
 			// Ignore non-JSON SSE events and continue looking for the matching response.
 		}
 	};
@@ -522,7 +575,28 @@ function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
 		value.jsonrpc === '2.0' &&
 		(typeof value.id === 'number' || typeof value.id === 'string') &&
 		!('method' in value) &&
-		(('result' in value) !== ('error' in value))
+		(('result' in value) !== ('error' in value)) &&
+		(!('error' in value) || isJsonRpcError(value.error))
+	);
+}
+
+function assertNoInvalidJsonRpcError(value: unknown): void {
+	if (
+		isRecord(value) &&
+		value.jsonrpc === '2.0' &&
+		(typeof value.id === 'number' || typeof value.id === 'string') &&
+		'error' in value &&
+		!isJsonRpcError(value.error)
+	) {
+		throw new McpProtocolError('MCP server returned an invalid JSON-RPC error object');
+	}
+}
+
+function isJsonRpcError(value: unknown): value is JsonRpcError {
+	return (
+		isRecord(value) &&
+		typeof value.code === 'number' &&
+		typeof value.message === 'string'
 	);
 }
 
@@ -532,6 +606,28 @@ function isLoopbackHostname(hostname: string): boolean {
 		hostname === '[::1]' ||
 		/^127(?:\.\d{1,3}){3}$/.test(hostname)
 	);
+}
+
+function isPrivateNetworkAddress(hostname: string): boolean {
+	const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	const ipv4Parts = normalized.split('.').map(Number);
+	if (
+		ipv4Parts.length === 4 &&
+		ipv4Parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+	) {
+		const [first, second] = ipv4Parts;
+		return (
+			first === 0 ||
+			first === 10 ||
+			(first === 100 && second >= 64 && second <= 127) ||
+			(first === 169 && second === 254) ||
+			(first === 172 && second >= 16 && second <= 31) ||
+			(first === 192 && second === 168) ||
+			(first === 198 && (second === 18 || second === 19)) ||
+			first >= 224
+		);
+	}
+	return normalized === '::' || normalized.startsWith('fc') || normalized.startsWith('fd') || /^fe[89ab]/.test(normalized);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

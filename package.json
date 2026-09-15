@@ -11,23 +11,22 @@
 		"scraping",
 		"search"
 	],
-	"author": {
-		"name": "mawentao",
-		"email": "18115264590@163.com"
-	},
 	"scripts": {
 		"build": "n8n-node build",
 		"build:watch": "tsc --watch",
 		"dev": "n8n-node dev",
 		"lint": "n8n-node lint",
 		"lint:fix": "n8n-node lint --fix",
-		"test": "npm run build --silent && node --test tests/**/*.test.cjs",
-		"test:coverage": "npm run build --silent && node --test --experimental-test-coverage tests/**/*.test.cjs",
+		"audit:production": "node scripts/audit-production.cjs",
+		"test": "npm run build",
 		"release": "n8n-node release",
 		"prepublishOnly": "n8n-node prerelease"
 	},
 	"files": [
-		"dist"
+		"dist/credentials",
+		"dist/nodes",
+		"dist/shared",
+		"dist/package.json"
 	],
 	"n8n": {
 		"n8nNodesApiVersion": 1,
@@ -40,13 +39,21 @@
 		]
 	},
 	"devDependencies": {
-		"@n8n/node-cli": "*",
+		"@n8n/node-cli": "0.44.3",
 		"eslint": "9.32.0",
 		"prettier": "3.6.2",
-		"release-it": "^19.0.4",
+		"release-it": "21.0.2",
 		"typescript": "5.9.2"
 	},
 	"peerDependencies": {
 		"n8n-workflow": "*"
+	},
+	"author": {
+		"name": "dataify",
+		"email": "service@dataify.com"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/dataify-server/dataify-n8n.git"
 	}
 }

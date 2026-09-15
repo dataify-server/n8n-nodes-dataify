@@ -155,9 +155,9 @@ export class DataifyMcp implements INodeType {
 						buildMcpUrl(
 							String(credentialData.serverUrl ?? ''),
 							credentialData.allowInsecureHttp === true,
+							credentialData.allowPrivateNetwork === true,
 						),
 					);
-					url.searchParams.set('token', token);
 					const allowedTools = String(credentialData.allowedTools ?? '').trim();
 					const credentialTestTools = new Set(
 						allowedTools
@@ -174,7 +174,10 @@ export class DataifyMcp implements INodeType {
 						const response = (await this.helpers.request({
 							uri: url.toString(),
 							method: request.method,
-							headers: request.headers,
+							headers: {
+								...request.headers,
+								Authorization: `Bearer ${token}`,
+							},
 							...(request.body !== undefined ? { body: request.body } : {}),
 							encoding: 'utf8',
 							followAllRedirects: false,
@@ -215,8 +218,10 @@ export class DataifyMcp implements INodeType {
 				this: ILoadOptionsFunctions,
 				filter?: string,
 			): Promise<INodeListSearchResult> {
-				const client = await createClient(this);
+				const token = await readApiTokenForRedaction(this);
+				let client: DataifyMcpClient | undefined;
 				try {
+					client = await createClient(this);
 					const normalizedFilter = filter?.trim().toLowerCase() ?? '';
 					const tools = await client.listTools();
 					return {
@@ -233,8 +238,12 @@ export class DataifyMcp implements INodeType {
 								description: formatToolSearchDescription(tool),
 							})),
 					};
+				} catch (error) {
+					const rawMessage = error instanceof Error ? error.message : String(error);
+					const safeMessage = toSafeErrorMessage(rawMessage, [token]);
+					throw new NodeOperationError(this.getNode(), safeMessage);
 				} finally {
-					await client.close();
+					await client?.close();
 				}
 			},
 		},
@@ -317,7 +326,7 @@ export class DataifyMcp implements INodeType {
 	}
 }
 
-async function readApiTokenForRedaction(context: IExecuteFunctions): Promise<string> {
+async function readApiTokenForRedaction(context: DataifyFunctions): Promise<string> {
 	try {
 		const credentials = (await context.getCredentials(
 			CREDENTIAL_TYPE,
@@ -335,6 +344,7 @@ async function createClient(context: DataifyFunctions): Promise<DataifyMcpClient
 	const url = buildMcpUrl(
 		String(credentials.serverUrl),
 		credentials.allowInsecureHttp === true,
+		credentials.allowPrivateNetwork === true,
 	);
 	const allowedDomain = new URL(url).hostname;
 
@@ -365,12 +375,9 @@ function simplifyToolResult(result: McpCallToolResult): IDataObject {
 	if (isDataObject(result.structuredContent)) {
 		return result.structuredContent as IDataObject;
 	}
-	if (result.structuredContent !== undefined) {
-		return { structuredContent: result.structuredContent as IDataObject[keyof IDataObject] };
-	}
 
 	const text = result.content
-		?.filter((content) => content.type === 'text' && typeof content.text === 'string')
+		.filter((content) => content.type === 'text' && typeof content.text === 'string')
 		.map((content) => content.text)
 		.join('\n');
 	if (text) {
@@ -385,7 +392,7 @@ function simplifyToolResult(result: McpCallToolResult): IDataObject {
 		return { text };
 	}
 
-	return { content: (result.content ?? []) as IDataObject[keyof IDataObject] };
+	return { content: result.content as IDataObject[keyof IDataObject] };
 }
 
 function formatTool(tool: McpTool, includeSchemas: boolean): IDataObject {

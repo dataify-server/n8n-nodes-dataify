@@ -11,7 +11,7 @@ export class DataifyMcpApi implements ICredentialType {
 		light: 'file:../nodes/DataifyMcp/dataify.svg',
 		dark: 'file:../nodes/DataifyMcp/dataify.dark.svg',
 	} as const;
-	documentationUrl = 'https://dashboard.dataify.com';
+	documentationUrl = 'https://doc.dataify.com/9142554m0';
 	supportedNodes = ['dataifyMcp'];
 	restrictToSupportedNodes = true as const;
 
@@ -20,8 +20,8 @@ export class DataifyMcpApi implements ICredentialType {
 			displayName: 'Server URL',
 			name: 'serverUrl',
 			type: 'string',
-			default: 'http://localhost:7780',
-			placeholder: 'https://mcp.example.com',
+			default: 'https://mcp.dataify.com',
+			placeholder: 'http://localhost:7780',
 			description: 'Base URL of the Dataify MCP server; /mcp is added automatically',
 		},
 		{
@@ -41,6 +41,14 @@ export class DataifyMcpApi implements ICredentialType {
 				'Whether to allow unencrypted HTTP for a trusted non-local server. HTTPS is strongly recommended.',
 		},
 		{
+			displayName: 'Allow Private IP Address',
+			name: 'allowPrivateNetwork',
+			type: 'boolean',
+			default: false,
+			description:
+				'Whether to allow a custom server URL containing a private-network IP address. Hostname resolution remains subject to the n8n host network policy.',
+		},
+		{
 			displayName: 'Allowed Tools',
 			name: 'allowedTools',
 			type: 'string',
@@ -55,9 +63,12 @@ export class DataifyMcpApi implements ICredentialType {
 		const allowedTools = String(credentials.allowedTools ?? '').trim();
 		return {
 			...requestOptions,
+			headers: {
+				...requestOptions.headers,
+				Authorization: `Bearer ${String(credentials.apiToken)}`,
+			},
 			qs: {
 				...requestOptions.qs,
-				token: String(credentials.apiToken),
 				...(allowedTools ? { tools: allowedTools } : {}),
 			},
 		};
