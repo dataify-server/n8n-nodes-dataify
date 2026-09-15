@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # n8n-nodes-dataify
 
 This n8n community node connects workflows to the Dataify MCP API. It discovers the tools available to the configured token at runtime, so newly added Dataify tools can be used without updating the node package.
