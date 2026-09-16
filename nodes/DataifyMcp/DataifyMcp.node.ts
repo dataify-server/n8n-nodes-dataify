@@ -13,6 +13,8 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 	JsonObject,
+	ResourceMapperField,
+	ResourceMapperFields,
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
@@ -114,13 +116,55 @@ export class DataifyMcp implements INodeType {
 				],
 			},
 			{
+				displayName: 'Arguments Mode',
+				name: 'argumentsMode',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['tool'], operation: ['call'] } },
+				options: [
+					{
+						name: 'Form',
+						value: 'form',
+						description: 'Fill in each parameter using a form generated from the selected tool schema',
+					},
+					{
+						name: 'Raw JSON',
+						value: 'json',
+						description: 'Provide a raw JSON object; supports AI auto-fill',
+					},
+				],
+				default: 'form',
+			},
+			{
 				displayName: 'Arguments',
+				name: 'argumentsForm',
+				type: 'resourceMapper',
+				default: { mappingMode: 'defineBelow', value: null },
+				noDataExpression: true,
+				typeOptions: {
+					loadOptionsDependsOn: ['toolName.value'],
+					resourceMapper: {
+						resourceMapperMethod: 'getToolParameters',
+						mode: 'add',
+						fieldWords: { singular: 'parameter', plural: 'parameters' },
+						addAllFields: true,
+						supportAutoMap: false,
+						hideNoDataError: true,
+					},
+				},
+				displayOptions: {
+					show: { resource: ['tool'], operation: ['call'], argumentsMode: ['form'] },
+				},
+			},
+			{
+				displayName: 'Arguments (JSON)',
 				name: 'arguments',
 				type: 'json',
-				required: true,
 				default: '{}',
 				description: 'JSON object matching the selected MCP tool input schema',
-				displayOptions: { show: { resource: ['tool'], operation: ['call'] } },
+				displayOptions: {
+					show: { resource: ['tool'], operation: ['call'], argumentsMode: ['json'] },
+				},
 			},
 			{
 				displayName: 'Simplify Output',
@@ -233,7 +277,7 @@ export class DataifyMcp implements INodeType {
 									.includes(normalizedFilter);
 							})
 							.map((tool) => ({
-								name: tool.name,
+								name: formatToolSearchLabel(tool),
 								value: tool.name,
 								description: formatToolSearchDescription(tool),
 							})),
@@ -242,6 +286,34 @@ export class DataifyMcp implements INodeType {
 					const rawMessage = error instanceof Error ? error.message : String(error);
 					const safeMessage = toSafeErrorMessage(rawMessage, [token]);
 					throw new NodeOperationError(this.getNode(), safeMessage);
+				} finally {
+					await client?.close();
+				}
+			},
+		},
+		resourceMapping: {
+			async getToolParameters(this: ILoadOptionsFunctions): Promise<ResourceMapperFields> {
+				const toolNameParam = this.getNodeParameter('toolName', undefined) as
+					| { value?: string }
+					| string
+					| undefined;
+				const toolName =
+					typeof toolNameParam === 'string' ? toolNameParam : String(toolNameParam?.value ?? '');
+				if (!toolName?.trim()) {
+					return { fields: [] };
+				}
+
+				let client: DataifyMcpClient | undefined;
+				try {
+					client = await createClient(this);
+					const tools = await client.listTools();
+					const tool = tools.find((candidate) => candidate.name === toolName);
+					if (!tool?.inputSchema) {
+						return { fields: [] };
+					}
+					return { fields: jsonSchemaToResourceMapperFields(tool.inputSchema) };
+				} catch {
+					return { fields: [] };
 				} finally {
 					await client?.close();
 				}
@@ -267,7 +339,7 @@ export class DataifyMcp implements INodeType {
 					if (!toolName.trim()) {
 						throw new NodeOperationError(this.getNode(), 'Tool name is required', { itemIndex });
 					}
-					const args = parseToolArguments(this.getNodeParameter('arguments', itemIndex, '{}'));
+					const args = readToolArguments(this, itemIndex);
 					const result = await client.callTool(toolName, args);
 					const simplifyOutput = this.getNodeParameter('simplifyOutput', itemIndex) as boolean;
 					returnData.push({
@@ -416,4 +488,85 @@ function formatToolSearchDescription(tool: McpTool): string | undefined {
 
 function isDataObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readToolArguments(
+	context: IExecuteFunctions,
+	itemIndex: number,
+): Record<string, unknown> {
+	const argumentsMode = context.getNodeParameter('argumentsMode', itemIndex, 'json') as string;
+	if (argumentsMode === 'form') {
+		const mapping = context.getNodeParameter('argumentsForm', itemIndex, {}) as {
+			value?: unknown;
+		};
+		if (isDataObject(mapping?.value) && Object.keys(mapping.value).length > 0) {
+			return parseToolArguments(mapping.value);
+		}
+	}
+	return parseToolArguments(context.getNodeParameter('arguments', itemIndex, '{}'));
+}
+
+function jsonSchemaToResourceMapperFields(schema: Record<string, unknown>): ResourceMapperField[] {
+	const properties = isDataObject(schema.properties) ? schema.properties : {};
+	const requiredNames = new Set(
+		Array.isArray(schema.required)
+			? schema.required.filter((name): name is string => typeof name === 'string')
+			: [],
+	);
+
+	const fields: ResourceMapperField[] = [];
+	for (const [name, rawProperty] of Object.entries(properties)) {
+		const property = isDataObject(rawProperty) ? rawProperty : {};
+		const enumValues = Array.isArray(property.enum) ? property.enum : undefined;
+		const description = typeof property.description === 'string' ? property.description.trim() : '';
+
+		const field: ResourceMapperField = {
+			id: name,
+			displayName: description ? `${name} - ${truncateText(description, 120)}` : name,
+			required: requiredNames.has(name),
+			defaultMatch: false,
+			canBeUsedToMatch: false,
+			display: true,
+			type: enumValues ? 'options' : mapJsonSchemaTypeToResourceMapperType(property.type),
+		};
+
+		if (enumValues) {
+			field.options = enumValues.map((value) => ({
+				name: String(value),
+				value: value as string | number | boolean,
+			}));
+		}
+
+		fields.push(field);
+	}
+
+	return fields;
+}
+
+function mapJsonSchemaTypeToResourceMapperType(type: unknown): ResourceMapperField['type'] {
+	switch (type) {
+		case 'integer':
+		case 'number':
+			return 'number';
+		case 'boolean':
+			return 'boolean';
+		case 'object':
+			return 'object';
+		case 'array':
+			return 'array';
+		default:
+			return 'string';
+	}
+}
+
+function truncateText(value: string, maxLength: number): string {
+	return value.length > maxLength ? `${value.slice(0, maxLength - 1)}...` : value;
+}
+
+function formatToolSearchLabel(tool: McpTool): string {
+	const description = tool.description?.trim();
+	if (!description) {
+		return tool.name;
+	}
+	return `${tool.name} - ${truncateText(description, 90)}`;
 }
