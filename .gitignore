@@ -1,6 +1,23 @@
-dist
+# Dependencies
 node_modules
-.npm-cache/
+
+# Build output
+dist
+
+# Local n8n dev data and npm caches
 .n8n-dev/
-n8n-dev.stdout.log
-n8n-dev.stderr.log
+.npm-cache/
+
+# Logs
+*.log
+
+# npm pack output
+*.tgz
+
+# Environment variables
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
