@@ -1,8 +1,4 @@
-import type {
-	IAuthenticate,
-	ICredentialType,
-	INodeProperties,
-} from 'n8n-workflow';
+import type { IAuthenticate, ICredentialType, INodeProperties } from 'n8n-workflow';
 
 export class DataifyMcpApi implements ICredentialType {
 	name = 'dataifyMcpApi';

@@ -125,7 +125,8 @@ export class DataifyMcp implements INodeType {
 					{
 						name: 'Form',
 						value: 'form',
-						description: 'Fill in each parameter using a form generated from the selected tool schema',
+						description:
+							'Fill in each parameter using a form generated from the selected tool schema',
 					},
 					{
 						name: 'Raw JSON',
@@ -243,7 +244,8 @@ export class DataifyMcp implements INodeType {
 					if (tools.length === 0) {
 						return {
 							status: 'Error',
-							message: 'Connected, but no tools are visible. Check the API token and allowed tools.',
+							message:
+								'Connected, but no tools are visible. Check the API token and allowed tools.',
 						};
 					}
 					await client.callTool('query_user_info', {});
@@ -382,9 +384,7 @@ export class DataifyMcp implements INodeType {
 					const apiError: JsonObject = {
 						message: safeMessage,
 						...(error.code !== undefined ? { code: error.code } : {}),
-						...(error.statusCode !== undefined
-							? { httpCode: String(error.statusCode) }
-							: {}),
+						...(error.statusCode !== undefined ? { httpCode: String(error.statusCode) } : {}),
 					};
 					throw new NodeApiError(this.getNode(), apiError, { itemIndex });
 				}
@@ -490,10 +490,7 @@ function isDataObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readToolArguments(
-	context: IExecuteFunctions,
-	itemIndex: number,
-): Record<string, unknown> {
+function readToolArguments(context: IExecuteFunctions, itemIndex: number): Record<string, unknown> {
 	const argumentsMode = context.getNodeParameter('argumentsMode', itemIndex, 'json') as string;
 	if (argumentsMode === 'form') {
 		const mapping = context.getNodeParameter('argumentsForm', itemIndex, {}) as {

@@ -224,10 +224,7 @@ export class DataifyMcpClient {
 				throw new McpProtocolError(`MCP tools/list exceeded ${MAX_TOOL_PAGES} pages`);
 			}
 			const params = cursor !== undefined ? { cursor } : {};
-			const { result } = await this.sendRequest<unknown>(
-				'tools/list',
-				params,
-			);
+			const { result } = await this.sendRequest<unknown>('tools/list', params);
 			if (!isRecord(result) || !Array.isArray(result.tools)) {
 				throw new McpProtocolError('MCP tools/list response does not contain a tools array');
 			}
@@ -575,7 +572,7 @@ function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
 		value.jsonrpc === '2.0' &&
 		(typeof value.id === 'number' || typeof value.id === 'string') &&
 		!('method' in value) &&
-		(('result' in value) !== ('error' in value)) &&
+		'result' in value !== 'error' in value &&
 		(!('error' in value) || isJsonRpcError(value.error))
 	);
 }
@@ -593,11 +590,7 @@ function assertNoInvalidJsonRpcError(value: unknown): void {
 }
 
 function isJsonRpcError(value: unknown): value is JsonRpcError {
-	return (
-		isRecord(value) &&
-		typeof value.code === 'number' &&
-		typeof value.message === 'string'
-	);
+	return isRecord(value) && typeof value.code === 'number' && typeof value.message === 'string';
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -627,14 +620,22 @@ function isPrivateNetworkAddress(hostname: string): boolean {
 			first >= 224
 		);
 	}
-	return normalized === '::' || normalized.startsWith('fc') || normalized.startsWith('fd') || /^fe[89ab]/.test(normalized);
+	return (
+		normalized === '::' ||
+		normalized.startsWith('fc') ||
+		normalized.startsWith('fd') ||
+		/^fe[89ab]/.test(normalized)
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function readHeader(headers: Record<string, unknown> | undefined, name: string): string | undefined {
+function readHeader(
+	headers: Record<string, unknown> | undefined,
+	name: string,
+): string | undefined {
 	if (!headers) {
 		return undefined;
 	}
